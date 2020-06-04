@@ -1,0 +1,266 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+
+```{r}
+
+library(MASS)
+library(dplyr)
+library(tibble)
+library(knitr)
+library(readxl)
+library(ROCR)
+library(tidyr)
+library(ggplot2)
+library(statsr)
+
+library(randomForest)
+library(caret)
+library(e1071)
+library(pROC)
+
+library(party)
+library(rpart)
+
+
+
+```
+
+
+**Problem 4:**
+
+*We import the wine dataset from the csv file 'wineData.csv' and name our dataframe "wine". We are given that wine quality is a categorical variable with two classes. But presently it is a numerical variable as seen from the data summary. So we convert the variable "quality" into a factor variable.*
+
+```{r cars}
+
+wine <- read.csv("wineData.csv")
+summary(wine)
+wine$quality <- factor(wine$quality)
+
+
+colnames(wine)[colnames(wine)=="fixed.acidity"] <- "fixed_acidity"
+colnames(wine)[colnames(wine)=="volatile.acidity"] <- "volatile_acidity"
+colnames(wine)[colnames(wine)=="residual.sugar"] <- "residual_sugar"
+colnames(wine)[colnames(wine)=="citric.acid"] <- "citric_acid"
+colnames(wine)[colnames(wine)=="free.sulfur.dioxide"] <- "free_sulphur"
+colnames(wine)[colnames(wine)=="total.sulfur.dioxide"] <- "total_sulphur"
+
+```
+
+
+**Splitting Training and Test sets**  
+
+*Let us split our data into training and test sets. We will split it in a 70:30 ratio, 70% in the training set and 30% in the test set. We also split the training data into training and validation sets.*
+
+
+```{r}
+
+set.seed(101)
+wine_index <- sample.int(n = nrow(wine), size = floor(.70*nrow(wine)), replace = F)
+winetrain <- wine[wine_index,]
+winetest <- wine[-wine_index,]
+
+
+winetrain_index <- sample.int(n = nrow(wine), 
+                              size = floor(.70*nrow(winetrain)), replace = F)
+winetrtrain <- wine[winetrain_index,]
+winetrval <- wine[-winetrain_index,]
+
+
+```
+
+
+**We will first do parameter tuning with following steps:**
+
+1. First, we start by creating Model with default parameters   
+2. We will determine the best values of "cp" and "minsplit" parameters, to come to a more fine tuned model.  
+3. Evaluate the final model with chosen parameters on the test data using cross-validation.  
+
+
+**Rpart decision tree using "gini"**  
+We construct rpart decision tree using Gini index and find the best cp value using printcp().  
+
+```{r}
+
+library(rpart)
+
+k=10
+n = floor(nrow(winetrain)/k)
+err.vect = rep(NA,k)
+
+for (i in 1:k) {
+  
+  s1 = ((i-1) * n+1)
+  s2 = (i*n)
+  subset = s1:s2
+  
+  cvr.train = winetrain[-subset,]
+  cvr.test = winetrain[subset,]
+
+  winerpartgini <- rpart(quality ~ .-quality, data = cvr.train, 
+                     method = "class", parms = list(split = "gini" ))
+  
+  winepredgini_rpart <- prediction(
+    predict(winerpartgini, newdata = cvr.test, type = "prob")[,2], 
+    cvr.test$quality)
+  
+  err.vect[i] <- performance(winepredgini_rpart, "auc")@y.values 
+  
+
+  print(paste("AUC for fold", i, ":", err.vect[i]))
+  
+}
+
+print(paste("Average AUC :", mean(err.vect[[i]])))
+
+
+printcp(winerpartgini)
+
+
+```
+
+_*The best value for rpart with gini, of cp comes out to be 0.01 and best value of minsplit is 8.*_ 
+
+
+```{r}
+
+set.seed(11123)
+
+# Run the default model
+
+ginituned <- rpart(quality ~ .-quality, data = winetrtrain, 
+                     method = "class", parms = list(split = "gini" ),
+                     control = rpart.control(minsplit = 8, cp = 0.01) )
+
+ginicon <- predict(ginituned, winetrval, type = "class")
+
+confusionMatrix(ginicon,  winetrval$quality)
+
+
+```
+
+
+**Rpart decision tree using "information gain"**  
+We construct rpart decision tree using information gain index and find the best cp value using printcp().  
+
+```{r}
+
+
+
+k=10
+n = floor(nrow(winetrain)/k)
+err.vect = rep(NA,k)
+
+for (i in 1:k) {
+  
+  s1 = ((i-1) * n+1)
+  s2 = (i*n)
+  subset = s1:s2
+  
+  cvr.train = winetrain[-subset,]
+  cvr.test = winetrain[subset,]
+
+  winerpartinfo <- rpart(quality ~ .-quality, data = cvr.train, 
+                     method = "class", parms = list(split = "information" ))
+  
+  winepredinfo_rpart <- prediction(
+    predict(winerpartinfo, newdata = cvr.test, 
+    type = "prob")[,2],
+    cvr.test$quality )
+  
+  err.vect[i] <- performance(winepredinfo_rpart, "auc")@y.values 
+  
+
+  print(paste("AUC for fold", i, ":", err.vect[i]))
+  
+}
+
+print(paste("Average AUC :", mean(err.vect[[i]])))
+
+printcp(winerpartinfo)
+
+
+```
+
+_*The best value for rpart with information gain, of cp comes out to be 0.01 and best value of minsplit is 8.*_      
+
+
+```{r}
+
+infotuned <- rpart(quality ~ .-quality, data = winetrtrain, 
+                     method = "class", parms = list(split = "information" ),
+                     control = rpart.control(minsplit = 8, cp = 0.01) )
+
+infocon <- predict(infotuned, winetrval, type = "class")
+
+confusionMatrix(infocon,  winetrval$quality)
+
+
+```
+
+
+_*The AUC for both Gini and information gain come to be the same. But the accuracy for Gini rpart is slightly higher than that of rpart information gain. So we will go ahead and check the performance of rpart using Gini on the test data*_ 
+
+**10-Fold Cross Validation for Model Evaluation on test data using Gini:**
+
+In a classification problem, we can measure the model performance using metrics like Area under the ROC curve or accuracy/error rate. We will use Area under the ROC curve as our measure of performance. To perform 10-fold cross validation, we have used a for loop which will run 10 times on different subsets of the "wine" data and generate a resulting Area under the ROC curve. The whole data is subsetted in 10 equal parts and each time the loop runs, one of those 10 is kept apart as the test set and remaining 9 subsets become a part of train set for that cross validation loop.    
+
+In the loop, we build the model using train and predict on test. We have used the prediction() and performance() functions, to calculate the area under curve for each loop(fold).  After we get the AUC for all 10 folds, we take an average of them to find the overall performance of the model.    
+
+
+```{r}
+
+k=10
+n = floor(nrow(wine)/k)
+aucgini.vect = rep(NA,k)
+
+for (i in 1:k) {
+  
+  s1 = ((i-1) * n+1)
+  s2 = (i*n)
+  subset = s1:s2
+  
+  cvrwine.train = wine[-subset,]
+  cvrwine.test = wine[subset,]
+
+  winerpartgini <- rpart(quality ~ .-quality, data = cvrwine.train, 
+                     method = "class", parms = list(split = "gini" ),
+                     control = rpart.control(minsplit = 8, cp = 0.01))
+  
+  winepredgini_rpart <- prediction(
+    predict(winerpartgini, newdata = cvrwine.test, type = "prob")[,2],
+    cvrwine.test$quality )
+  
+  aucgini.vect[i] <- performance(winepredgini_rpart, "auc")@y.values 
+  
+
+  print(paste("AUC for fold", i, ":", aucgini.vect[i]))
+  
+}
+
+print(paste("Average AUC :", mean(aucgini.vect[[i]])))
+
+
+```
+
+
+```{r}
+
+winetuned <- rpart(quality ~ .-quality, data = winetrain, 
+                     method = "class", parms = list(split = "gini" ),
+                     control = rpart.control(minsplit = 8, cp = 0.01) )
+
+tunedcon <- predict(winetuned, winetest, type = "class")
+
+confusionMatrix(tunedcon,  winetest$quality)
+
+
+```
+
+
+**Finding:**  
+We get an AUC of 0.737 on the training data and an AUC of 0.73 when performing cross validation on the test data.    
+The accuracy on training data came to be 0.8203  and that on test data it is 0.8163. 
+
